@@ -8,7 +8,7 @@ async def get_or_create(user_id: str, display_name: str | None = None) -> UserPr
     async with AsyncSessionLocal() as s:
         profile = await s.get(UserProfile, user_id)
         if profile is None:
-            profile = UserProfile(discord_user_id=user_id, display_name=display_name)
+            profile = UserProfile(telegram_user_id=user_id, display_name=display_name)
             s.add(profile)
             await s.commit()
             await s.refresh(profile)
@@ -23,7 +23,7 @@ async def get(user_id: str) -> UserProfile | None:
 async def set_profile(user_id: str, profile: CreatorProfile) -> None:
     async with AsyncSessionLocal() as s:
         await s.execute(
-            update(UserProfile).where(UserProfile.discord_user_id == user_id).values(profile=profile)
+            update(UserProfile).where(UserProfile.telegram_user_id == user_id).values(profile=profile)
         )
         await s.commit()
 
@@ -34,7 +34,7 @@ async def mark_onboarded(user_id: str, display_name: str | None = None) -> None:
         values["display_name"] = display_name
     async with AsyncSessionLocal() as s:
         await s.execute(
-            update(UserProfile).where(UserProfile.discord_user_id == user_id).values(**values)
+            update(UserProfile).where(UserProfile.telegram_user_id == user_id).values(**values)
         )
         await s.commit()
 
@@ -46,6 +46,6 @@ async def update_preferences(user_id: str, **kwargs) -> None:
         return
     async with AsyncSessionLocal() as s:
         await s.execute(
-            update(UserProfile).where(UserProfile.discord_user_id == user_id).values(**values)
+            update(UserProfile).where(UserProfile.telegram_user_id == user_id).values(**values)
         )
         await s.commit()

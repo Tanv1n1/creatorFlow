@@ -3,7 +3,7 @@ from telegram.ext import Application, CommandHandler, CallbackQueryHandler, Cont
 
 from creatorflow.db.repos import user_repo
 from creatorflow.services.profiles import get as get_profile
-from creatorflow.bot.keyboards import profile_select, parse_profile, SETTINGS_PREFIX
+from creatorflow.bot.keyboards import parse_profile, SETTINGS_PREFIX, TOGGLE_PREFIX, settings_menu, parse_toggle
 
 _GLOSSARY = {
     "pacing": (
@@ -45,22 +45,25 @@ _GLOSSARY = {
 }
 
 
-async def settings_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    uid  = str(update.effective_user.id)
-    user = await user_repo.get_or_create(uid)
-    cfg  = get_profile(user.profile)
-
-    text = (
+def _settings_text(user, cfg) -> str:
+    return (
         f"⚙️ *Your settings*\n\n"
         f"Current profile: {cfg.emoji} *{cfg.name}* — {cfg.description}\n\n"
-        f"Other preferences:\n"
+        f"Other preferences (tap to toggle):\n"
         f"Captions:    {'✅' if user.prefer_captions else '❌'}\n"
         f"Subtitles:   {'✅' if user.prefer_subtitles else '❌'}\n"
         f"Thumbnails:  {'✅' if user.prefer_thumbnails else '❌'}\n\n"
         f"Tap below to change your profile:"
     )
+
+
+async def settings_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    uid  = str(update.effective_user.id)
+    user = await user_repo.get_or_create(uid)
+    cfg  = get_profile(user.profile)
+
     target = update.message or update.callback_query.message
-    await target.reply_text(text, parse_mode="Markdown", reply_markup=profile_select(SETTINGS_PREFIX))
+    await target.reply_text(_settings_text(user, cfg), parse_mode="Markdown", reply_markup=settings_menu(user))
 
 
 async def handle_settings_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -79,6 +82,23 @@ async def handle_settings_callback(update: Update, context: ContextTypes.DEFAULT
     )
 
 
+async def handle_toggle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    field = parse_toggle(query.data)
+    if field is None:
+        await query.answer()
+        return
+
+    uid  = str(update.effective_user.id)
+    user = await user_repo.get_or_create(uid)
+    await user_repo.update_preferences(uid, **{field: not getattr(user, field)})
+    user = await user_repo.get_or_create(uid)
+    cfg  = get_profile(user.profile)
+
+    await query.answer(f"{field.replace('prefer_', '').title()} {'enabled' if getattr(user, field) else 'disabled'}")
+    await query.message.edit_text(_settings_text(user, cfg), parse_mode="Markdown", reply_markup=settings_menu(user))
+
+
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = (
         "❓ *CreatorFlow commands*\n\n"
@@ -87,9 +107,10 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "Send a video — Process it directly (≤50 MB)\n"
         "/bigupload — Get a link for large videos\n"
         "/confirm <key> — Confirm a large upload\n"
-        "/status — Check your latest video\n\n"
+        "/status — Check your latest video\n"
+        "/cancel — Cancel a video that's still queued\n\n"
         "*Preferences*\n"
-        "/settings — Change your creator profile\n"
+        "/settings — Change your creator profile or toggles\n"
         "/explain <term> — Explain any score or term\n\n"
         "*Explain terms*\n"
         "`/explain pacing`  `/explain clarity`  `/explain filler`  `/explain retakes`  `/explain score`"
@@ -111,3 +132,4 @@ def register(app: Application):
     app.add_handler(CommandHandler("help", help_command))
     app.add_handler(CommandHandler("explain", explain_command))
     app.add_handler(CallbackQueryHandler(handle_settings_callback, pattern=f"^{SETTINGS_PREFIX}"))
+    app.add_handler(CallbackQueryHandler(handle_toggle_callback, pattern=f"^{TOGGLE_PREFIX}"))

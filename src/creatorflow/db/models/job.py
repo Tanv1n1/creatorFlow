@@ -19,15 +19,16 @@ class JobStatus(str, enum.Enum):
     GENERATING_ASSETS = "generating_assets"
     DONE              = "done"
     FAILED            = "failed"
+    CANCELLED         = "cancelled"
 
 
 class Job(Base):
     __tablename__ = "jobs"
 
     id:                  Mapped[str]      = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
-    discord_user_id:     Mapped[str]      = mapped_column(String(32))
-    discord_channel_id:  Mapped[str]      = mapped_column(String(32))
-    discord_message_id:  Mapped[str|None] = mapped_column(String(32), nullable=True)
+    telegram_user_id:    Mapped[str]      = mapped_column(String(32))
+    telegram_chat_id:    Mapped[str]      = mapped_column(String(32))
+    telegram_message_id: Mapped[str|None] = mapped_column(String(32), nullable=True)
 
     status: Mapped[JobStatus] = mapped_column(SAEnum(JobStatus), default=JobStatus.QUEUED)
 

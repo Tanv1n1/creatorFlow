@@ -8,16 +8,16 @@ from creatorflow.db.models.job import Job, JobStatus
 
 async def create(
     *,
-    discord_user_id: str,
-    discord_channel_id: str,
+    telegram_user_id: str,
+    telegram_chat_id: str,
     input_r2_key: str,
-    discord_message_id: str | None = None,
+    telegram_message_id: str | None = None,
 ) -> Job:
     async with AsyncSessionLocal() as s:
         job = Job(
-            discord_user_id=discord_user_id,
-            discord_channel_id=discord_channel_id,
-            discord_message_id=discord_message_id,
+            telegram_user_id=telegram_user_id,
+            telegram_chat_id=telegram_chat_id,
+            telegram_message_id=telegram_message_id,
             input_r2_key=input_r2_key,
         )
         s.add(job)
@@ -67,6 +67,18 @@ async def fail(job_id: str, error: str) -> None:
         await s.commit()
 
 
+async def cancel(job_id: str) -> bool:
+    """Cancels a job only if it hasn't been picked up by the batch worker yet. Returns whether it was cancelled."""
+    async with AsyncSessionLocal() as s:
+        result = await s.execute(
+            update(Job)
+            .where(Job.id == job_id, Job.status == JobStatus.QUEUED)
+            .values(status=JobStatus.CANCELLED)
+        )
+        await s.commit()
+        return result.rowcount > 0
+
+
 async def list_pending() -> list[Job]:
     recoverable = {
         JobStatus.QUEUED, JobStatus.DOWNLOADING, JobStatus.TRANSCRIBING,
@@ -78,11 +90,11 @@ async def list_pending() -> list[Job]:
         return result.scalars().all()
 
 
-async def list_by_user(discord_user_id: str, limit: int = 10) -> list[Job]:
+async def list_by_user(telegram_user_id: str, limit: int = 10) -> list[Job]:
     async with AsyncSessionLocal() as s:
         result = await s.execute(
             select(Job)
-            .where(Job.discord_user_id == discord_user_id)
+            .where(Job.telegram_user_id == telegram_user_id)
             .order_by(Job.created_at.desc())
             .limit(limit)
         )

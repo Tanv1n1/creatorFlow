@@ -17,25 +17,36 @@ class ThumbnailCandidate:
 
 def extract_thumbnail_candidates(video_path: str, output_dir: str, top_n: int = 5) -> list[ThumbnailCandidate]:
     Path(output_dir).mkdir(parents=True, exist_ok=True)
-    cap      = cv2.VideoCapture(video_path)
-    fps      = cap.get(cv2.CAP_PROP_FPS) or 30
-    interval = int(fps / SAMPLE_RATE)
-    cascade  = _cascade()
-    results: list[ThumbnailCandidate] = []
-    idx = 0
+    cap = cv2.VideoCapture(video_path)
+    if not cap.isOpened():
+        cap.release()
+        raise ValueError(f"Could not open rendered video for thumbnail extraction: {video_path}")
 
-    while True:
-        cap.set(cv2.CAP_PROP_POS_FRAMES, idx)
-        ok, frame = cap.read()
-        if not ok:
-            break
-        ts   = idx / fps
-        path = str(Path(output_dir) / f"thumb_{ts:.2f}s.jpg")
-        cv2.imwrite(path, frame, [cv2.IMWRITE_JPEG_QUALITY, 90])
-        results.append(ThumbnailCandidate(ts, _score(frame, cascade), path))
-        idx += interval
+    try:
+        fps      = cap.get(cv2.CAP_PROP_FPS) or 30
+        interval = max(int(fps / SAMPLE_RATE), 1)
+        cascade  = _cascade()
+        results: list[ThumbnailCandidate] = []
+        idx = 0
 
-    cap.release()
+        while True:
+            cap.set(cv2.CAP_PROP_POS_FRAMES, idx)
+            ok, frame = cap.read()
+            if not ok:
+                break
+            ts   = idx / fps
+            path = str(Path(output_dir) / f"thumb_{ts:.2f}s.jpg")
+            cv2.imwrite(path, frame, [cv2.IMWRITE_JPEG_QUALITY, 90])
+            results.append(ThumbnailCandidate(ts, _score(frame, cascade), path))
+            idx += interval
+    except cv2.error as e:
+        raise ValueError(f"Could not read frames from the rendered video: {e}") from e
+    finally:
+        cap.release()
+
+    if not results:
+        raise ValueError("Could not extract any thumbnail frames from the rendered video")
+
     results.sort(key=lambda c: c.score, reverse=True)
     top = results[:top_n]
     logger.info(f"[thumbnailer] top {len(top)}: {[f'{c.timestamp:.1f}s={c.score:.2f}' for c in top]}")
