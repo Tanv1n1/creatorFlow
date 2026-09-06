@@ -1,15 +1,14 @@
-import asyncio
 import logging
 
-from telegram.ext import Application
+from telegram import Update
+from telegram.ext import Application, ContextTypes
 
 from creatorflow.config import settings
-from creatorflow.db.engine import init_db
-from creatorflow.services import queue as job_queue
-from creatorflow.services.pipeline import process_job
 from creatorflow.bot.handlers import onboarding, upload, settings as settings_handlers
 
 logger = logging.getLogger(__name__)
+
+_application: Application | None = None
 
 
 def create_app() -> Application:
@@ -18,28 +17,33 @@ def create_app() -> Application:
     onboarding.register(app)
     upload.register(app)
     settings_handlers.register(app)
+    app.add_error_handler(_on_error)
 
     return app
 
 
-async def _on_startup(app: Application):
-    await init_db()
-    await job_queue.recover_pending()
-    asyncio.create_task(job_queue.worker_loop(process_job))
-    me = await app.bot.get_me()
-    logger.info(f"[bot] logged in as @{me.username} (id={me.id})")
-
-
-async def start_bot():
-    app = create_app()
-    app.post_init = _on_startup
-
-    async with app:
-        await app.start()
-        await app.updater.start_polling()
-        logger.info("[bot] polling started")
+async def _on_error(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
+    logger.error("[bot] unhandled error while processing update", exc_info=context.error)
+    if isinstance(update, Update) and update.effective_message:
         try:
-            await asyncio.Event().wait()  # run forever
-        finally:
-            await app.updater.stop()
-            await app.stop()
+            await update.effective_message.reply_text(
+                "⚠️ Something went wrong on my end handling that. Please try again, or use /help."
+            )
+        except Exception:
+            logger.exception("[bot] failed to notify user about the earlier error")
+
+
+async def get_application() -> Application:
+    """Builds (once per process) and initializes the PTB Application for webhook-mode dispatch."""
+    global _application
+    if _application is None:
+        _application = create_app()
+        await _application.initialize()
+    return _application
+
+
+async def process_update(update_data: dict) -> None:
+    """Feeds a single Telegram update (received via webhook) through the PTB handler pipeline."""
+    app = await get_application()
+    update = Update.de_json(update_data, app.bot)
+    await app.process_update(update)

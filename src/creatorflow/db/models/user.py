@@ -17,7 +17,7 @@ class CreatorProfile(str, enum.Enum):
 class UserProfile(Base):
     __tablename__ = "user_profiles"
 
-    discord_user_id: Mapped[str]      = mapped_column(String(32), primary_key=True)
+    telegram_user_id: Mapped[str]     = mapped_column(String(32), primary_key=True)
     profile:         Mapped[CreatorProfile] = mapped_column(SAEnum(CreatorProfile), default=CreatorProfile.CREATOR)
     display_name:    Mapped[str|None] = mapped_column(String(128), nullable=True)
 

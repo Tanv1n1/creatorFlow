@@ -10,15 +10,12 @@ from telegram.ext import Application, CommandHandler, MessageHandler, ContextTyp
 from creatorflow.config import settings
 from creatorflow.db.models.job import JobStatus
 from creatorflow.db.repos import job_repo, user_repo
-from creatorflow.services import queue
 from creatorflow.workers import storage
 from creatorflow.bot.messages import progress as progress_msg, results as results_msg
 
 logger = logging.getLogger(__name__)
 
-POLL_INTERVAL = settings.progress_update_interval
-POLL_TIMEOUT  = 600  # 10 min
-VALID_EXTS    = {".mp4", ".mov", ".webm", ".avi", ".mkv"}
+VALID_EXTS = {".mp4", ".mov", ".webm", ".avi", ".mkv"}
 
 
 async def upload_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -86,7 +83,7 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         job_id = jobs[0].id
 
     job = await job_repo.get(job_id)
-    if not job or job.discord_user_id != uid:
+    if not job or job.telegram_user_id != uid:
         await update.message.reply_text("Job not found.")
         return
 
@@ -94,8 +91,38 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await _send_results(update.effective_chat.id, context, job, uid)
     elif job.status == JobStatus.FAILED:
         await update.message.reply_text(progress_msg.build_failed(job), parse_mode="Markdown")
+    elif job.status == JobStatus.CANCELLED:
+        await update.message.reply_text("🚫 This video was cancelled.")
     else:
         await update.message.reply_text(progress_msg.build(job), parse_mode="Markdown")
+
+
+async def cancel_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """/cancel [job_id] — cancels a video that's still waiting to be processed."""
+    uid = str(update.effective_user.id)
+    job_id = context.args[0] if context.args else None
+
+    if job_id is None:
+        jobs = await job_repo.list_by_user(uid, limit=1)
+        if not jobs:
+            await update.message.reply_text("You don't have any videos to cancel.")
+            return
+        job_id = jobs[0].id
+
+    job = await job_repo.get(job_id)
+    if not job or job.telegram_user_id != uid:
+        await update.message.reply_text("Job not found.")
+        return
+
+    if job.status != JobStatus.QUEUED:
+        await update.message.reply_text("That video has already started processing, so it can't be cancelled anymore.")
+        return
+
+    cancelled = await job_repo.cancel(job_id)
+    if cancelled:
+        await update.message.reply_text("🚫 Cancelled. Send a new video whenever you're ready.")
+    else:
+        await update.message.reply_text("That video has already started processing, so it can't be cancelled anymore.")
 
 
 # ── internal ──────────────────────────────────────────────────────────────────
@@ -103,42 +130,18 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def _create_and_process(update: Update, context: ContextTypes.DEFAULT_TYPE, r2_key: str):
     uid = str(update.effective_user.id)
     job = await job_repo.create(
-        discord_user_id=uid,                              # holds Telegram user id
-        discord_channel_id=str(update.effective_chat.id),  # holds Telegram chat id
+        telegram_user_id=uid,                              # Telegram user id
+        telegram_chat_id=str(update.effective_chat.id),     # Telegram chat id
         input_r2_key=r2_key,
-        discord_message_id=str(update.message.message_id),
+        telegram_message_id=str(update.message.message_id),
     )
-    await queue.enqueue(job.id)
-
-    sent = await context.bot.send_message(
-        chat_id=update.effective_chat.id,
-        text=progress_msg.build(await job_repo.get(job.id)),
+    await update.message.reply_text(
+        "✅ *Got it — your video is in the queue!*\n\n"
+        "I process videos in batches, so this will be ready within the hour. "
+        "I'll message you here the moment it's done.\n\n"
+        f"Use `/status` to check anytime, or `/cancel {job.id}` if you change your mind.",
         parse_mode="Markdown",
     )
-    asyncio.create_task(_poll(context, update.effective_chat.id, sent.message_id, job.id, uid))
-
-
-async def _poll(context: ContextTypes.DEFAULT_TYPE, chat_id: int, message_id: int, job_id: str, uid: str):
-    elapsed = 0
-    while elapsed < POLL_TIMEOUT:
-        await asyncio.sleep(POLL_INTERVAL)
-        elapsed += POLL_INTERVAL
-        job = await job_repo.get(job_id)
-
-        if job.status == JobStatus.FAILED:
-            await context.bot.edit_message_text(chat_id=chat_id, message_id=message_id, text=progress_msg.build_failed(job), parse_mode="Markdown")
-            return
-        if job.status == JobStatus.DONE:
-            await context.bot.delete_message(chat_id=chat_id, message_id=message_id)
-            await _send_results(chat_id, context, job, uid)
-            return
-
-        try:
-            await context.bot.edit_message_text(chat_id=chat_id, message_id=message_id, text=progress_msg.build(job), parse_mode="Markdown")
-        except Exception:
-            pass  # message unchanged — Telegram rejects identical edits
-
-    await context.bot.edit_message_text(chat_id=chat_id, message_id=message_id, text="⏱️ This is taking longer than expected. Use /status to check later.")
 
 
 async def _send_results(chat_id: int, context: ContextTypes.DEFAULT_TYPE, job, uid: str):
@@ -168,4 +171,5 @@ def register(app: Application):
     app.add_handler(CommandHandler("bigupload", bigupload_command))
     app.add_handler(CommandHandler("confirm", confirm_command))
     app.add_handler(CommandHandler("status", status_command))
+    app.add_handler(CommandHandler("cancel", cancel_command))
     app.add_handler(MessageHandler(filters.VIDEO | filters.Document.VIDEO, handle_video))

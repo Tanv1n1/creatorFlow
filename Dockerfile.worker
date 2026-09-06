@@ -1,0 +1,15 @@
+syntax=docker/dockerfile:1
+FROM python:3.12-slim
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ffmpeg \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+COPY pyproject.toml ./
+COPY src ./src
+RUN pip install --no-cache-dir .
+
+# Runs once per invocation (triggered hourly by Cloud Scheduler via a Cloud Run Job execution),
+# drains every queued job, then exits.
+CMD ["python", "-m", "creatorflow.batch"]

@@ -1,11 +1,19 @@
 import json
 import logging
 from dataclasses import dataclass
-import ollama
+from groq import Groq
 from creatorflow.config import settings
 from creatorflow.workers.transcriber import Segment
 
 logger = logging.getLogger(__name__)
+_client: Groq | None = None
+
+
+def _get_client() -> Groq:
+    global _client
+    if _client is None:
+        _client = Groq(api_key=settings.groq_api_key)
+    return _client
 
 
 @dataclass
@@ -80,12 +88,12 @@ def _fmt(segments: list[Segment]) -> str:
 
 
 def _chat(system: str, user: str, temp: float) -> dict | list:
-    resp = ollama.chat(
-        model=settings.ollama_model,
+    resp = _get_client().chat.completions.create(
+        model=settings.groq_llm_model,
         messages=[{"role": "system", "content": system}, {"role": "user", "content": user}],
-        options={"temperature": temp},
+        temperature=temp,
     )
-    raw = resp["message"]["content"].strip()
+    raw = resp.choices[0].message.content.strip()
     return _parse(raw)
 
 

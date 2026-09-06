@@ -1,4 +1,3 @@
-from datetime import datetime
 from creatorflow.db.models.job import Job, JobStatus
 
 _STAGES = [
@@ -12,22 +11,41 @@ _STAGES = [
 
 
 def build(job: Job) -> str:
+    if job.status == JobStatus.QUEUED:
+        return (
+            "⏳ *Your video is queued*\n\n"
+            "Videos are processed in hourly batches — yours will start in the next run. "
+            "I'll message you here as soon as it's ready."
+        )
+
     current = next((i for i, (s, _) in enumerate(_STAGES) if s == job.status), 0)
     lines = []
     for i, (_, label) in enumerate(_STAGES):
         icon = "✓" if i < current else ("⟳" if i == current else "○")
         lines.append(f"{icon} Step {i+1}/6 — {label}")
 
-    elapsed  = (datetime.utcnow() - job.created_at).total_seconds()
-    eta_secs = max(0, 180 - elapsed)
-    eta_str  = f"{int(eta_secs // 60)}m {int(eta_secs % 60)}s" if eta_secs > 60 else f"{int(eta_secs)}s"
-
-    return "⏳ *Processing your video…*\n\n" + "\n".join(lines) + f"\n\n_Estimated time remaining: ~{eta_str}_"
+    return "⚙️ *Processing your video now…*\n\n" + "\n".join(lines) + "\n\n_Usually done within a few minutes._"
 
 
 def build_failed(job: Job) -> str:
     return (
-        "❌ *Something went wrong*\n\n"
-        "We hit an error while processing your video. Please try uploading it again.\n\n"
-        f"_Error: {job.error_message or 'Unknown error'}_"
+        "❌ *We couldn't finish this video*\n\n"
+        f"{_friendly_reason(job.error_message)}\n\n"
+        "Feel free to send it again — if it keeps happening, double-check the video meets the "
+        "requirements in /help."
     )
+
+
+def _friendly_reason(raw: str | None) -> str:
+    if not raw:
+        return "Something went wrong on our end."
+    r = raw.lower()
+    if "too short" in r or "too long" in r:
+        return raw
+    if "unsupported" in r or "could not open" in r or "could not read" in r or "could not extract" in r or "unreadable" in r:
+        return "We couldn't read that video file — it may be corrupted. Try re-exporting or re-recording it."
+    if "ffmpeg error" in r:
+        return "We hit a problem while rendering your video. This can happen with unusual formats or codecs — try a standard MP4 export."
+    if "invalid json" in r or "llm returned" in r:
+        return "Our AI editor had trouble analysing this video. Please try again — it usually works on a retry."
+    return "Something went wrong while processing your video."

@@ -1,20 +1,21 @@
 import logging
+import subprocess
+import tempfile
 from dataclasses import dataclass
-from typing import Optional
-from faster_whisper import WhisperModel
+from pathlib import Path
+
+from groq import Groq
 from creatorflow.config import settings
 
 logger = logging.getLogger(__name__)
-_model: Optional[WhisperModel] = None
+_client: Groq | None = None
 
 
-def _get_model() -> WhisperModel:
-    global _model
-    if _model is None:
-        logger.info(f"[transcriber] loading {settings.whisper_model}")
-        _model = WhisperModel(settings.whisper_model, device=settings.whisper_device, compute_type=settings.whisper_compute_type)
-        logger.info("[transcriber] model ready")
-    return _model
+def _get_client() -> Groq:
+    global _client
+    if _client is None:
+        _client = Groq(api_key=settings.groq_api_key)
+    return _client
 
 
 @dataclass
@@ -33,19 +34,51 @@ class TranscriptResult:
 
 
 def transcribe(video_path: str) -> TranscriptResult:
-    model = _get_model()
-    vad = {"min_silence_duration_ms": 500}
+    """Transcribes (source language) and translates (to English) via Groq's hosted Whisper API."""
+    audio_path = _extract_audio(video_path)
+    try:
+        client = _get_client()
 
-    logger.info(f"[transcriber] transcribing {video_path}")
-    raw_src, info = model.transcribe(video_path, task="transcribe", language=None, vad_filter=True, vad_parameters=vad, beam_size=5)
-    src = [Segment(s.start, s.end, s.text.strip()) for s in raw_src if s.text.strip()]
+        logger.info(f"[transcriber] transcribing {video_path} via Groq ({settings.groq_whisper_model})")
+        raw_src = client.audio.transcriptions.create(
+            file=(Path(audio_path).name, Path(audio_path).read_bytes()),
+            model=settings.groq_whisper_model,
+            response_format="verbose_json",
+        )
+        src = [Segment(_f(s, "start"), _f(s, "end"), _f(s, "text").strip())
+               for s in _f(raw_src, "segments") if _f(s, "text").strip()]
+        detected_language = _f(raw_src, "language") or "en"
 
-    logger.info("[transcriber] translating to english")
-    raw_eng, _ = model.transcribe(video_path, task="translate", language=info.language, vad_filter=True, vad_parameters=vad, beam_size=5)
-    eng = [Segment(s.start, s.end, s.text.strip()) for s in raw_eng if s.text.strip()]
+        logger.info("[transcriber] translating to english via Groq")
+        raw_eng = client.audio.translations.create(
+            file=(Path(audio_path).name, Path(audio_path).read_bytes()),
+            model=settings.groq_whisper_model,
+            response_format="verbose_json",
+        )
+        eng = [Segment(_f(s, "start"), _f(s, "end"), _f(s, "text").strip())
+               for s in _f(raw_eng, "segments") if _f(s, "text").strip()]
 
-    logger.info(f"[transcriber] done — lang={info.language} ({info.language_probability:.0%}), {len(src)} src segs, {len(eng)} eng segs")
-    return TranscriptResult(src, eng, info.language, info.language_probability)
+        logger.info(f"[transcriber] done — lang={detected_language}, {len(src)} src segs, {len(eng)} eng segs")
+        return TranscriptResult(src, eng, detected_language, 1.0)
+    finally:
+        Path(audio_path).unlink(missing_ok=True)
+
+
+def _f(obj, key):
+    """Groq's verbose_json segments come back as plain dicts; the top-level response is an object."""
+    return obj[key] if isinstance(obj, dict) else getattr(obj, key)
+
+
+def _extract_audio(video_path: str) -> str:
+    """Pulls a small mono audio track so we upload far less data than the raw video."""
+    out = tempfile.mktemp(suffix=".mp3")
+    r = subprocess.run(
+        ["ffmpeg", "-y", "-i", video_path, "-vn", "-ac", "1", "-ar", "16000", "-b:a", "64k", out],
+        capture_output=True, text=True,
+    )
+    if r.returncode != 0:
+        raise RuntimeError(f"ffmpeg audio extraction failed (code {r.returncode}): {r.stderr[-500:]}")
+    return out
 
 
 def segments_to_srt(segments: list[Segment]) -> str:

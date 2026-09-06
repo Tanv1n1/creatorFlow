@@ -2,16 +2,12 @@ from __future__ import annotations
 
 import asyncio
 import importlib
-import os
 import socket
-import sqlite3
 import sys
 from pathlib import Path
 
 import boto3
-import httpx
 from telegram import Bot
-from faster_whisper import WhisperModel
 
 from creatorflow.config import settings
 
@@ -40,11 +36,14 @@ header("CONFIGURATION")
 
 required = [
     "telegram_bot_token",
+    "telegram_webhook_secret",
     "r2_account_id",
     "r2_access_key_id",
     "r2_secret_access_key",
     "r2_bucket_name",
     "r2_endpoint_url",
+    "groq_api_key",
+    "database_url",
 ]
 
 for field in required:
@@ -61,9 +60,9 @@ modules = [
     "sqlalchemy",
     "alembic",
     "telegram",
-    "ollama",
+    "groq",
     "boto3",
-    "faster_whisper",
+    "cv2",
     "pydantic_settings",
 ]
 
@@ -87,23 +86,24 @@ async def check_bot():
 
 asyncio.run(check_bot())
 
-header("OLLAMA")
+header("GROQ")
 
 try:
-    r = httpx.get(f"{settings.ollama_host}/api/tags", timeout=5)
+    from groq import Groq
 
-    if r.status_code == 200:
-        ok("Ollama server reachable")
+    client = Groq(api_key=settings.groq_api_key)
+    models = [m.id for m in client.models.list().data]
+    ok("Groq API reachable")
 
-        models = [m["name"] for m in r.json()["models"]]
-
-        if settings.ollama_model in models:
-            ok(f"Model {settings.ollama_model} installed")
-        else:
-            fail(f"{settings.ollama_model} not installed")
-
+    if settings.groq_llm_model in models:
+        ok(f"LLM model {settings.groq_llm_model} available")
     else:
-        fail("Ollama server not responding")
+        fail(f"LLM model {settings.groq_llm_model} not found on Groq")
+
+    if settings.groq_whisper_model in models:
+        ok(f"Whisper model {settings.groq_whisper_model} available")
+    else:
+        fail(f"Whisper model {settings.groq_whisper_model} not found on Groq")
 
 except Exception as e:
     fail(str(e))
@@ -128,36 +128,22 @@ try:
 except Exception as e:
     fail(f"Backblaze B2 bucket '{settings.r2_bucket_name}' is not accessible: {e}")
 
-header("WHISPER")
-
-try:
-
-    WhisperModel(
-        settings.whisper_model,
-        device=settings.whisper_device,
-        compute_type=settings.whisper_compute_type,
-    )
-
-    ok("Whisper model loaded")
-
-except Exception as e:
-    fail(str(e))
-
 
 header("DATABASE")
 
-try:
+async def check_db():
+    try:
+        from sqlalchemy import text
+        from creatorflow.db.engine import engine
 
-    db = ROOT / "creatorflow.db"
+        async with engine.connect() as conn:
+            await conn.execute(text("SELECT 1"))
+        kind = settings.database_url.split("://")[0]
+        ok(f"Database reachable ({kind})")
+    except Exception as e:
+        fail(str(e))
 
-    if db.exists():
-        sqlite3.connect(db).close()
-        ok("SQLite database")
-    else:
-        fail("Database file missing")
-
-except Exception as e:
-    fail(str(e))
+asyncio.run(check_db())
 
 
 header("ALEMBIC")
@@ -166,6 +152,11 @@ if (ROOT / "alembic").exists():
     ok("Alembic directory")
 else:
     fail("Alembic missing")
+
+if list((ROOT / "alembic" / "versions").glob("*.py")):
+    ok("Alembic has at least one migration")
+else:
+    fail("No Alembic migrations found — run `alembic revision --autogenerate`")
 
 
 header("PROJECT")
